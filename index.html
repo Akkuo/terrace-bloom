@@ -645,6 +645,7 @@ $('againBtn').addEventListener('click', e => { e.stopPropagation(); restart(); }
 const ray = new THREE.Raycaster(); ray.far = 4.6;
 const CENTER = new THREE.Vector2(0, 0);
 function pickTarget() {
+  camera.updateWorldMatrix(true, false); // updatePlayer 剛改過位置／旋轉，矩陣要先更新
   ray.setFromCamera(CENTER, camera);
   const list = proxies.filter(p => p.userData.it.active);
   const hit = ray.intersectObjects(list, false)[0];
@@ -669,7 +670,7 @@ function promptFor(it) {
 }
 function interact() {
   if (G.scene !== 'playing') return;
-  const it = G.target; if (!it) return;
+  const it = G.target; if (!it || !it.active) return; // G.target 是上一幀的快取，可能已被用掉
   if (it.kind === 'gate') { it.open = !it.open; SFX.gate(); toast(`第 ${it.u + 1} 層水閘${it.open ? '已打開' : '已關閉'}`); }
   else if (it.kind === 'stonepile') { if (G.stones >= 6) { toast('石塊已經拿滿（6）'); SFX.no(); } else { G.stones = 6; SFX.stone(); setTool(2); toast('撿起石塊，去補石牆缺口'); } }
   else if (it.kind === 'grove') { if (G.bamboo >= 4) { toast('竹管已經拿滿（4）'); SFX.no(); } else { G.bamboo = 4; SFX.bamboo(); setTool(3); toast('砍下竹管，去鋪引水管'); } }
@@ -677,6 +678,7 @@ function interact() {
   updateTools();
 }
 function useOnce(it) {
+  if (!it.active) return;
   const pos = it.proxy.position;
   if (it.kind === 'gap') {
     if (G.stones <= 0) { SFX.no(); toast('沒有石塊：到石堆按 E，或敲碎碎石'); G.actCD = 0.8; return; }
@@ -693,14 +695,18 @@ function useOnce(it) {
   } else if (it.kind === 'gate' || it.kind === 'stonepile' || it.kind === 'grove') { interact(); G.actCD = 0.5; }
   updateTools();
 }
+let holdIt = null;
 function updateUse(dt) {
   const it = G.target;
   G.actCD -= dt;
   const pressed = usePressed; usePressed = false;
-  if (!useHeld || !it) { G.holdProg = 0; return; }
+  // 同一幀內按下又放開（點一下）也要處理單次操作；長按進度綁定目標，換目標或放開即歸零
+  if (!it || !(useHeld || pressed)) { G.holdProg = 0; holdIt = null; return; }
+  if (it !== holdIt) { G.holdProg = 0; holdIt = it; }
   const need = toolFor(it);
   if (need && G.tool !== need) { setTool(need); }
   if (it.kind === 'weed' || it.kind === 'rubble') {
+    if (!useHeld) { G.holdProg = 0; return; }
     const p0 = G.holdProg; G.holdProg += dt / (it.kind === 'rubble' ? 1.3 : 0.9);
     G.swing = Math.max(G.swing, 0.6);
     if (Math.floor(p0 * 4) !== Math.floor(G.holdProg * 4)) { SFX.dig(); emit(it.x, it.proxy.position.y - 0.2, it.z, it.kind === 'rubble' ? 0x8a867e : 0x8a7a3a, 4, 1.5); }
@@ -710,7 +716,7 @@ function updateUse(dt) {
       if (it.ti >= 0 && !weedsLeft(it.ti)) toast(`${tName(it.ti)}清理乾淨，可以播種了`);
       updateTools();
     }
-  } else if (G.actCD <= 0 && (pressed || it.kind === 'gap')) useOnce(it);
+  } else if (G.actCD <= 0 && (pressed || (useHeld && it.kind === 'gap'))) useOnce(it);
 }
 
 // ---------------- 更新 ----------------
@@ -731,7 +737,6 @@ function computeStats() {
   const stoneFrac = gaps.reduce((a, g) => a + Math.min(3, g.placed), 0) / (3 * gaps.length);
   const crop = plots.reduce((a, p) => a + (p.planted ? p.growth : 0), 0) / plots.length;
   G.restore = 100 * (0.2 * s.weeds / s.weedsT + 0.2 * stoneFrac + 0.12 * s.slots / s.slotsT + 0.18 * s.hold / NT + 0.3 * crop);
-  if (s.ripe === plots.length) G.restore = 100;
 }
 function tipText() {
   const s = G.stats;
@@ -773,7 +778,7 @@ function updateGame(dt) {
   updatePlayer(dt);
   G.target = pickTarget();
   updateUse(dt);
-  computeWater(); computeStats();
+  computeWater();
   // 梯田：水、綠化、作物
   for (let i = 0; i < NT; i++) {
     const t = T[i];
@@ -788,6 +793,7 @@ function updateGame(dt) {
   }
   for (let u = 1; u < NT; u++) { const g = gates[u]; g.spill.visible = g.flowing && !g.slot.placed; g.slot.out.visible = g.flowing && g.slot.placed; }
   slots[1].out.visible = slots[0].placed && slots[1].placed;
+  computeStats(); // 在作物生長之後統計，最後一株剛成熟的那一幀也能觸發祭典
   if (!G.birdsOn && G.restore >= 35) { G.birdsOn = true; birds.forEach(b => b.g.visible = true); toast('鳥群飛回山谷了'); SFX.bird(); }
   if (!G.fliesOn && G.restore >= 60) { G.fliesOn = true; flies.visible = true; toast('螢火蟲回來了，夜裡會發光'); }
   // 天氣
